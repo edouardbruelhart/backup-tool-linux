@@ -7,7 +7,6 @@ usage() {
   echo "Options:"
   echo "  -n    Add new USB drives and backup destinations"
   echo "  -m    Modify existing USB drives and destinations (add/remove)"
-  echo "  -d    Deploy or update the service to automatize backup when a drive is plugged"
   echo "  -b    Launch backup manually"
   echo "  -h    Display this help message"
   exit 1
@@ -31,10 +30,6 @@ case "$1" in
   -m)
     # Call the script for modifying drives and destinations
     /usr/local/bin/backup-tool-m.sh "${@:2}"
-    ;;
-  -d)
-    # Call the script for deploying udev rules and systemd services
-    /usr/local/bin/backup-tool-d.sh "${@:2}"
     ;;
   -b)
     # Call the script for deploying udev rules and systemd services

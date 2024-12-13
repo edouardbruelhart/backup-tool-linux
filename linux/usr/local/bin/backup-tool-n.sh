@@ -46,11 +46,12 @@ if [ $? -eq 0 ]; then
     for name in $names; do
       full_path="/dev/$name"
 
-      processes=$(sudo lsof "$full_path")
+      # Detect processes linked to the usb drives
+      processes=$(sudo lsof "$full_path" >/dev/null 2>&1)
       
-      # If there are processes using the partition, kill them
+      # If there are processes using the partition, kill them to avoid permission issues
       if [[ -n "$processes" ]]; then
-        sudo lsof -t "$full_path" | xargs -r sudo kill -9
+        sudo lsof -t "$full_path" | xargs -r sudo kill -9 >/dev/null 2>&1
       fi
     done
 
@@ -59,7 +60,7 @@ if [ $? -eq 0 ]; then
 
     # Unmount each partition
     for mountpoint in $mountpoints; do
-      sudo umount "$mountpoint"
+      sudo umount "$mountpoint" >/dev/null 2>&1
       if [[ $? -ne 0 ]]; then
         echo "Failed to unmount $mountpoint. Exiting."
         exit 1
@@ -67,16 +68,16 @@ if [ $? -eq 0 ]; then
     done
 
     # Delete all partitions on the disk
-    sudo sgdisk --zap-all "$disk_path"  # Delete all partitions (WARNING: This erases everything!)
+    sudo sgdisk --zap-all "$disk_path" >/dev/null 2>&1
 
     # Refresh the partition table and attempt to re-read the changes
-    sudo partprobe "$disk_path" || sudo kpartx -u "$disk_path"
+    sudo partprobe "$disk_path" || sudo kpartx -u "$disk_path" >/dev/null 2>&1
 
     # Create a new partition table (GPT or MBR)
-    sudo parted "$disk_path" mklabel gpt
+    sudo parted "$disk_path" mklabel gpt >/dev/null 2>&1
 
     # Create a new partition using the entire disk space
-    sudo parted "$disk_path" mkpart primary 0% 100%
+    sudo parted "$disk_path" mkpart primary 0% 100% >/dev/null 2>&1
 
     # Find the new partition (assuming it will be the first partition on the disk)
     new_partition="${disk_path}1"
@@ -84,7 +85,7 @@ if [ $? -eq 0 ]; then
     sleep 2
 
     # Format the new partition as exFAT with the specified volume name
-    sudo mkfs.exfat -n "$volume_name" "$new_partition"
+    sudo mkfs.exfat -n "$volume_name" "$new_partition" >/dev/null 2>&1
 
     # Check if formatting was successful
     if [ $? -eq 0 ]; then
@@ -95,7 +96,7 @@ if [ $? -eq 0 ]; then
     fi
 
     # Use partprobe or kpartx to ensure the new partition is detected
-    sudo partprobe "$disk_path"
+    sudo partprobe "$disk_path" >/dev/null 2>&1
 
     sleep 2
 
@@ -123,12 +124,16 @@ fi
 # Use a loop to let the user select multiple backup destinations
 destinations_array=()
 while true; do
+    # Get the terminal window ID
+    parent_window=$(xwininfo -root -tree | grep -i "Terminal" | head -n 1 | awk '{print $1}')
+    echo "$parent_window"
+
     # Launch Zenity to select a directory
     selected_destination=$(zenity --file-selection --directory --title="Select Backup Target" --text="Choose a directory as a backup target.")
     
     # Check if a destination was selected
     if [ -z "$selected_destination" ]; then
-        zenity --error --text="No directory selected. Please select a directory to continue or click Cancel."
+        zenity --error --text="No directory selected. Please select a directory to continue."
     else
         # Add the selected destination to the array
         destinations_array+=("$selected_destination")
