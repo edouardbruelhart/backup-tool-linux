@@ -5,10 +5,9 @@
 # Function to display usage information
 usage() {
   echo "Options:"
-  echo "  -n    Add new USB drives and backup destinations"
-  echo "  -m    Modify existing USB drives and destinations (add/remove)"
-  echo "  -b    Launch backup manually"
-  echo "  -h    Display this help message"
+  echo "  -n    Add a new backup setup"
+  echo "  -m    Modify an existing backup setup"
+  echo "  -b    Start a backup on all plugged backup setup drives"
   exit 1
 }
 
