@@ -1,48 +1,105 @@
 #!/bin/bash
 
-# Loading config file
-config_file="/etc/backup-tool.conf"
+# Get the current logged-in user's home directory
+USER_HOME=$(eval echo ~$USER)
 
-# Full lsblk output with required columns, including transport type (TRAN)
-lsblk_output=$(lsblk -a -d -o TRAN,MODEL,SIZE,NAME)
-
-# Filter and prepare the list of USB drives (TRAN=usb), with device paths (e.g., /dev/sda1)
-usb_drives=$(echo "$lsblk_output" | awk '
-BEGIN { FS=" "; OFS=" " }
-NR > 1 && $1 == "usb" { print "check", "/dev/" $5, $2, $3, $4 }
-')
-
-# Use zenity to present a checklist for selecting multiple USB drives
-selected_drives=$(zenity --list --title="Select a Drive" --column="" --column="Drive Path" --column="Name" --column="Model" --column="Size" --checklist --multiple $usb_drives)
-
-# Check if any drives were selected
-if [ -z "$selected_drives" ]; then
-  echo "No drives selected. Exiting..."
-  exit 1
+# Get the linked configuration file
+if [ "$USER_HOME" == "/root" ]; then
+    # If is root or uses sudo, use the default configuration file
+    CONFIG_FILE="/etc/backup-tool/backup-tool.conf"
+else
+    # If user is a non-root user, use the user-specific configuration file
+    CONFIG_FILE="$USER_HOME/.config/backup-tool/backup-tool.conf"
 fi
 
-# Split the selected drives into an array
-IFS='|' read -r -a drives_array <<< "$selected_drives"
+# Function to ask for drive selection
+ask_drives() {
 
-# Ask user for the new volume name
-volume_name="backup"
+    # Extract UUIDs from the config file
+    uuid_list=$(grep -oP '^\[\K[^\]]+' "$CONFIG_FILE" | sort | uniq)
 
-# Ask user for confirmation before formatting
-zenity --question --title="Confirm Formatting" --text="Are you sure you want to format the selected drives as exFAT? This will erase all data on the drives."
+    # Full lsblk output with required columns
+    lsblk_output=$(lsblk -o TRAN,MODEL,SIZE,NAME,UUID)
 
-# Check if the user clicked "Yes"
-if [ $? -eq 0 ]; then
-  # Clear existing drives first
-  sudo sed -i '/^DRIVES=/c\DRIVES=' "$config_file"
+    # Remove already setup drives
+    for uuid in $uuid_list; do
+        # Extract the base drive name for the current UUID
+        drive_name=$(lsblk -o NAME,UUID | grep "$uuid" | awk '{print $1}' | sed 's/^[[:space:]]*└─//' | sed 's/[0-9]*$//')
 
-  for drive in "${drives_array[@]}"; do
-    # Extract the device path (e.g., /dev/sda) from the selected drive
-    disk_path=$drive
+        # Remove the lines corresponding to the obtained drive_name from the lsblk_output
+        lsblk_output=$(echo "$lsblk_output" | grep -v "$drive_name")
+    done
 
-    # Get the list of device names (e.g., sdb1, sdb2)
-    names=$(lsblk -o NAME -nr "$disk_path" | grep -v '^$')
+    # Filter and prepare the list of USB drives, without already setup drives
+    usb_drives=$(echo "$lsblk_output" | awk '
+    BEGIN { FS=" "; OFS=" " }
+    NR > 1 && $1 == "usb" { print "/dev/" $5, $2, $3, $4 }
+    ')
 
-    # Iterate over each partition
+    # Check if there are available drives
+    if [ -z "$usb_drives" ]; then
+    echo "No available drive. Exiting..."
+    exit 1
+    fi
+
+    # Display the available drives in the terminal and wait for a user response
+    echo "Enter the number of the drive you want to select:"
+    while true; do
+
+        IFS=$'\n' read -rd '' -a usb_array <<< "$usb_drives"
+        for i in "${!usb_array[@]}"; do
+            echo "$((i+1)). ${usb_array[$i]}"
+        done
+        read -r drive
+        # Validate input and retrieve selected drive informations
+        if [[ $drive -le 0 || $drive -gt ${#usb_array[@]} ]]; then
+            echo "Invalid choice. Please select a valid drive."
+        else
+            selected_drive="${usb_array[$drive-1]}"
+            drive_path="${selected_drive%% *}"
+            break
+        fi
+    done
+}
+
+# Function to ask for formatting
+ask_formatting() {
+    echo "Do you want to format the drive? This action erases all content on the drive."
+    while true; do
+        echo "1. Yes"
+        echo "2. No"
+        read -r format
+        # Validate input
+        if [[ $format -gt 0 && $format -le 2 ]]; then
+            break
+        else
+            echo "Invalid choice. Please type 1 for Yes, 2 for No."
+        fi
+    done
+}
+
+# Function to ask for volume name
+ask_new_volume() {
+    echo "Enter a name for the newly created volume (letters and numbers only):"
+    while true; do
+        read -r volume_name
+        LC_ALL=C # Enforce C locale for regex check
+        if [[ $volume_name =~ ^[a-zA-Z0-9]+$ ]]; then
+            echo "Formatting drive..."
+            format_drive
+            break
+        else
+            echo "Invalid volume name. Please use only letters and numbers (no spaces, special characters, or accents)."
+        fi
+    done
+}
+
+# Function to format the selected drive
+format_drive() {
+    # Retrieve all volumes of the drive
+    names=$(lsblk -o NAME -nr "$drive_path" | grep -v '^$')
+
+    # Create volumes path
     for name in $names; do
       full_path="/dev/$name"
 
@@ -56,7 +113,7 @@ if [ $? -eq 0 ]; then
     done
 
     # Get the list of mount points
-    mountpoints=$(lsblk -o MOUNTPOINT -nr "$disk_path" | grep -v '^$')
+    mountpoints=$(lsblk -o MOUNTPOINT -nr "$drive_path" | grep -v '^$')
 
     # Unmount each partition
     for mountpoint in $mountpoints; do
@@ -68,20 +125,21 @@ if [ $? -eq 0 ]; then
     done
 
     # Delete all partitions on the disk
-    sudo sgdisk --zap-all "$disk_path" >/dev/null 2>&1
+    sudo sgdisk --zap-all "$drive_path" >/dev/null 2>&1
 
     # Refresh the partition table and attempt to re-read the changes
-    sudo partprobe "$disk_path" || sudo kpartx -u "$disk_path" >/dev/null 2>&1
+    sudo partprobe "$drive_path" || sudo kpartx -u "$drive_path" >/dev/null 2>&1
 
     # Create a new partition table (GPT or MBR)
-    sudo parted "$disk_path" mklabel gpt >/dev/null 2>&1
+    sudo parted "$drive_path" mklabel gpt >/dev/null 2>&1
 
     # Create a new partition using the entire disk space
-    sudo parted "$disk_path" mkpart primary 0% 100% >/dev/null 2>&1
+    sudo parted "$drive_path" mkpart primary 0% 100% >/dev/null 2>&1
 
-    # Find the new partition (assuming it will be the first partition on the disk)
-    new_partition="${disk_path}1"
+    # Construct the new partition
+    new_partition="${drive_path}1"
 
+    # Wait for system update, otherwise the new volume is not correctly detected
     sleep 2
 
     # Format the new partition as exFAT with the specified volume name
@@ -95,73 +153,264 @@ if [ $? -eq 0 ]; then
       exit 1
     fi
 
-    # Use partprobe or kpartx to ensure the new partition is detected
-    sudo partprobe "$disk_path" >/dev/null 2>&1
+    # Use partprobe or to ensure the new partition is detected
+    sudo partprobe "$drive_path" >/dev/null 2>&1
 
+    # Wait for system update, otherwise UUID is not correctly retrieved
     sleep 2
 
     # Extract UUID of newly formatted disk
-    UUID=$(lsblk -o UUID -nr "$new_partition" | grep -v '^$')
+    volume_name=$(lsblk -o LABEL -nr "$new_partition" | grep -v '^$')
+    uuid=$(lsblk -o UUID -nr "$new_partition" | grep -v '^$')
+    size=$(lsblk -o SIZE -nr "$new_partition" | grep -v '^$')
+}
+
+# Function to ask for volume name
+ask_existing_volume() {
+    # Extract the base drive name (e.g. sda from /dev/sda)
+    base_name=$(basename "$drive_path")
+
+    # Use lsblk to list partitions for the selected drive
+    lsblk_output=$(lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT,UUID -r | grep "^${base_name}[0-9]")
     
-    # Append the UUID to DRIVES (comma-separated list)
-    current_drives=$(grep '^DRIVES=' "$config_file" | cut -d'=' -f2)
-    if [[ -n "$current_drives" ]]; then
-        updated_drives="${current_drives}${UUID},"
+    # Construct the text to display volumes
+    volumes=$(echo "$lsblk_output" | awk '
+    BEGIN { FS=" "; OFS=" " } { print $4, $2, $3, $1, $5, $6 }
+    ' | grep -v '^[[:space:]]*$')
+
+    # Check if volumes are available
+    if [ -z "$volumes" ]; then
+        no_volume
     else
-        updated_drives="${UUID},"
+        existing_volume
     fi
-    sudo sed -i "/^DRIVES=/c\DRIVES=${updated_drives}" "$config_file"
+}
 
-  done
+# In case no volume is detected, asks user to format the drive
+no_volume() {
+    echo "No available volume. Do you want to format and create one? Be careful, this will erase all data on drive."
+    while true; do
+        echo "1. Yes"
+        echo "2. No"
+        read -r no_volume
+        if [[ $no_volume -gt 0 && $no_volume -le 2 ]]; then
+            if [ $no_volume == 1 ]; then
+                ask_new_volume
+                break
+            else
+                echo "Without formatting, this drive can't be used. Exiting..."
+                exit 1
+            fi
+        else
+            echo "Invalid choice. Please type 1 for Yes, 2 for No."
+        fi
+    done
+}
 
-  # Remove trailing comma from DRIVES
-  sudo sed -i -E 's/DRIVES=(.*),$/DRIVES=\1/' "$config_file"
+# In case volume(s) is/are detected, asks user to choose the one he wants
+existing_volume() {
+    echo "Enter the number of the volume you want to select:"
+    while true; do
+        IFS=$'\n' read -rd '' -a volume_array <<< "$volumes"
+        for i in "${!volume_array[@]}"; do
+            echo "$((i+1)). ${volume_array[$i]}"
+        done
+        read -r volume_number
 
-else
-  echo "Formatting canceled."
+        if [[ $volume_number -le 0 || $volume_number -gt ${#volume_array[@]} ]]; then
+            echo "Invalid choice. Please select a valid volume."
+        else
+            selected_volume="${volumes[$volume_number-1]}"
+            fstype=$(echo "$selected_volume" | awk '{print $3}')
+            # Check that the volume is formatted in exfat, else propose user to format in exfat
+            if [ "$fstype" == "exfat" ]; then
+                volume_name=$(echo "$selected_volume" | awk '{print $1}')
+                uuid=$(echo "$selected_volume" | awk '{print $6}')
+                size=$(echo "$selected_volume" | awk '{print $2}')
+            else
+                echo "The volume you selected is not formatted in exfat. This could lead to compatibility issues with other systems and/or to file size limits. Do you want to format it in exFAT?"
+                while true; do
+                    echo "1. Yes"
+                    echo "2. No"
+                    read -r warning
+                    if [[ $warning -gt 0 && $warning -le 2 ]]; then
+                        if [ "$warning" == 1 ]; then
+                            ask_new_volume
+                        else
+                            volume_name=$(echo "$selected_volume" | awk '{print $1}')
+                            uuid=$(echo "$selected_volume" | awk '{print $6}')
+                            size=$(echo "$selected_volume" | awk '{print $2}')
+                        fi
+                        break
+                    else
+                        echo "Invalid choice. Please type 1 to format, 2 to continue."
+                    fi
+                done
+            fi
+            break
+        fi
+    done
+}
+
+# Asks user to enter the paths of backup targets
+ask_backup_target() {
+    echo "Adding backup targets...:"
+
+    # Initialize an array to store valid paths
+    target_array=()
+
+    # Get the total size of the external drive in bytes
+    drive_size=$(lsblk -o SIZE -b -n "$drive_path" | head -n 1)
+
+    # Initialize remaining size as the total drive size
+    remaining_size=$drive_size
+
+    while true; do
+        echo "Enter the path of the folder you want to backup:"
+        read -r backup_target
+
+        # Check if the path exists
+        if [ -d "$backup_target" ]; then
+            # Get the size of the folder in bytes
+            folder_size=$(du -sb "$backup_target" | awk '{ print $1 }')
+
+            # Check if the folder fits in the remaining space
+            if [ "$folder_size" -le "$remaining_size" ]; then
+                # Add the folder to the array
+                target_array+=("$backup_target")
+
+                # Update the remaining size
+                remaining_size=$(($remaining_size - $folder_size))
+
+                # Convert sizes to human-readable format for display
+                remaining_size_human=$(numfmt --to=iec "$remaining_size")
+
+                echo "The folder '$backup_target' has been added."
+                echo "Remaining space on the drive: $remaining_size_human."
+
+                # Ask if the user wants to add another path
+                echo "Do you want to add another folder?"
+                echo "1. Yes"
+                echo "2. No"
+                read -r response
+                if [[ $response -gt 0 && $response -le 2 ]]; then
+                    if [ "$response" != 1 ]; then
+                        break
+                    fi
+                else
+                    echo "Invalid choice. Please type 1 to add a new target, 2 to stop here."
+                fi
+            else
+                # Folder is too large for the remaining space
+                remaining_size_human=$(numfmt --to=iec "$remaining_size")
+
+                echo "The folder '$backup_target' is too large to fit in the remaining space ($remaining_size_human)."
+                echo "Please choose a smaller folder or use another drive."
+            fi
+        else
+            # Path does not exist
+            echo "Invalid path. Please type a path that exists on the computer."
+        fi
+    done
+
+    # Ask if the user wants to take a snapshot of the entire system
+    echo "Do you want to take a snapshot of the entire system?"
+    while true; do
+        echo "1. Yes"
+        echo "2. No"
+        read -r snapshot_response
+        if [[ $snapshot_response -gt 0 && $snapshot_response -le 2 ]]; then
+            if [ "$snapshot_response" == 1 ]; then
+                # Calculate the size of the root directory (system snapshot) and exclude unnecessary folders
+                echo "Calculating the size of the system snapshot (can take a while)..."
+                # Get the size of the folder in bytes
+                system_size=$(sudo du -sb / \
+                    --exclude=/proc \
+                    --exclude=/sys \
+                    --exclude=/run \
+                    --exclude=/media \
+                    --exclude=/mnt \
+                    --exclude=/dev \
+                    --exclude=/tmp \
+                    --exclude=/var/run \
+                    --exclude=/run/user | awk '{ print $1 }')
+
+                # Check if the system fits in the remaining space
+                if [ "$system_size" -le "$remaining_size" ]; then
+                    # Convert sizes to human-readable format
+                    remaining_size_human=$(numfmt --to=iec "$remaining_size")
+
+                    echo "The system snapshot fits in the remaining space ($remaining_size_human)."
+                    echo "Adding the system snapshot to the backup process."
+                    
+                    snapshot="true"
+                else
+                    # System snapshot is too large
+                    remaining_size_human=$(numfmt --to=iec "$remaining_size")
+
+                    snapshot="false"
+                    echo "The system snapshot is too large to fit in the remaining space ($remaining_size_human)."
+                    echo "Skipping system snapshot."
+                fi
+            else
+                snapshot="false"
+                echo "Skipping system snapshot."
+            fi
+            break
+        else
+            echo "Invalid choice. Please type 1 to create a snapshot, 2 to ignore."
+        fi
+    done
+
+    # Display the final list of selected folders
+    echo "Backup target folders:"
+    for path in "${target_array[@]}"; do
+        echo "- $path"
+    done
+    echo "- snapshot: $snapshot"
+}
+
+# Register the drive to config file
+add_drive_to_config() {
+    # Append the new drive configuration to the config file
+    echo -e "\n[$uuid]" >> $CONFIG_FILE
+
+    # Assuming targets is an array, loop through and append them
+    for target in "${target_array[@]}"; do
+        echo "target=$target" >> $CONFIG_FILE
+    done
+
+    # Write the snapshot
+    echo "snapshot=$snapshot" >> $CONFIG_FILE
+
+    echo "Setup successfully saved!"
+}
+
+# Main script
+
+# Ask user to choose a drive
+ask_drives
+
+# Ask to format the drive
+ask_formatting
+
+# In case of positive answer, ask the new volume name to user
+if [ "$format" == 1 ]; then
+    ask_new_volume
 fi
 
-# Use a loop to let the user select multiple backup destinations
-destinations_array=()
-while true; do
-    # Get the terminal window ID
-    parent_window=$(xwininfo -root -tree | grep -i "Terminal" | head -n 1 | awk '{print $1}')
-    echo "$parent_window"
+# In cas of negative answer, ask the user to choose an existing volume
+if [ "$format" == 2 ]; then
+    ask_existing_volume
+fi
 
-    # Launch Zenity to select a directory
-    selected_destination=$(zenity --file-selection --directory --title="Select Backup Target" --text="Choose a directory as a backup target.")
-    
-    # Check if a destination was selected
-    if [ -z "$selected_destination" ]; then
-        zenity --error --text="No directory selected. Please select a directory to continue."
-    else
-        # Add the selected destination to the array
-        destinations_array+=("$selected_destination")
-        echo "$destination_array"
-        
-        # Ask the user if they want to add another destination
-        zenity --question --title="Add Another Backup Target?" --text="Do you want to add another backup target?"
-        if [ $? -ne 0 ]; then
-            break  # Exit the loop if the user clicks "No"
-        fi
-    fi
-done
-
-# Check if any destinations were selected
-if [ ${#destinations_array[@]} -eq 0 ]; then
-    echo "No backup target selected. Exiting..."
+if [ -z "$uuid" ]; then
+    echo "Error retrieving the UUID of the selected volume, try to unplug and plug the drive again, then run the script again. Exiting..."
     exit 1
 fi
 
-# Clear existing folders first
-sudo sed -i '/^FOLDERS=/c\FOLDERS=' "$config_file"
+# Asks backup targets
+ask_backup_target
 
-# Save the selected destinations to the FOLDERS parameter
-destinations_string=$(printf ",%s" "${destinations_array[@]}")
-destinations_string=${destinations_string:1}  # Remove leading comma
-sudo sed -i "/^FOLDERS=/c\FOLDERS=${destinations_string}" "$config_file"
-
-# Remove trailing comma from FOLDERS
-sudo sed -i -E 's/FOLDERS=(.*),$/FOLDERS=\1/' "$config_file"
-
-echo "Backup destinations saved successfully."
+# Save choices
+add_drive_to_config

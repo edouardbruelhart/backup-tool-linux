@@ -1,1 +1,41 @@
 #!/bin/bash
+
+set -e
+
+# Define the config file template location
+DEFAULT_CONFIG_FILE="/etc/backup-tool/backup-tool.conf"
+
+# Loop over each directory in /home
+for homedir in /home/*; do
+  # Ensure we only process directories (skip non-directories)
+  if [ -d "$homedir" ]; then
+    # Get the username from the directory name
+    username=$(basename "$homedir")
+    
+    # Skip system users or users without a valid home directory
+    if [[ ! "$username" =~ ^(root|_)*$ ]] && [ "$username" != "lost+found" ]; then
+      # Define the target directory for the config file
+      USER_CONFIG_DIR="$homedir/.config/backup-tool"
+      CONFIG_FILE="$USER_CONFIG_DIR/backup-tool.conf"
+      
+      # Create the config directory if it doesn't exist
+      if [ ! -d "$USER_CONFIG_DIR" ]; then
+        mkdir -p "$USER_CONFIG_DIR"
+        echo "Created directory: $USER_CONFIG_DIR"
+      fi
+      
+      # Copy the default config file to the user's directory if it doesn't already exist
+      if [ ! -f "$CONFIG_FILE" ]; then
+        cp "$DEFAULT_CONFIG_FILE" "$CONFIG_FILE"
+        echo "Configuration file copied to $CONFIG_FILE"
+        # Set ownership and permissions for the configuration file (only user should have access)
+        chown "$username":"$username" "$CONFIG_FILE"
+        chmod 600 "$CONFIG_FILE"
+      else
+        echo "Configuration file already exists for $username."
+      fi
+    fi
+  fi
+done
+
+exit 0
