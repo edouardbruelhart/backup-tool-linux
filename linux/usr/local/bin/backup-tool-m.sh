@@ -15,35 +15,44 @@ fi
 # Extract UUIDs from the config file
 uuid_list=$(grep -oP '^\[\K[^\]]+' "$CONFIG_FILE" | sort | uniq)
 
-# Initialize an empty string to hold the lsblk_output
-lsblk_output=""
+# Initialize an empty string for drives to exclude
+include_drives=""
 
-# Remove already setup drives
+# Extract the base drive names for already setup UUIDs
 for uuid in $uuid_list; do
-    # Extract the base drive name for the current UUID
+    # Extract drive name matching the UUID (filter out partitions)
     drive_name=$(lsblk -o NAME,UUID | grep "$uuid" | awk '{print $1}' | sed 's/^[[:space:]]*└─//' | sed 's/[0-9]*$//')
 
-    # Get the relevant lsblk information for the current drive
-    lsblk=$(lsblk -o TRAN,MODEL,SIZE,NAME | grep "$drive_name")
-
-    # Append the retrieved lsblk information to lsblk_output with a newline
-    lsblk_output="$lsblk_output$lsblk\n"
+    # Append to the list of drives to exclude
+    if [ -n "$drive_name" ]; then
+        include_drives="$include_drives$drive_name|"
+    fi
 done
 
-# Filter and prepare the list of USB drives, without already setup drives
+# Remove the trailing '|'
+include_drives=$(echo "$include_drives" | sed 's/|$//')
+
+# Debug: Print the include_drives variable
+echo "Include drives regex: $include_drives"
+
+# Use grep -E with the OR pattern to filter lsblk output
+lsblk_output=$(lsblk -o TRAN,MODEL,SIZE,NAME,UUID | grep -E "\b($include_drives)\b")
+echo "$lsblk_output"
+
+# Filter USB drives, excluding already setup drives
 usb_drives=$(echo "$lsblk_output" | awk '
-BEGIN { FS="[[:space:]]+"; OFS=" " }
-NR > 1 && $1 == "usb" { print "/dev/" $4, $2, $3, $1 }
+BEGIN { FS=" "; OFS=" " }
+NR > 1 && $1 == "usb" { print "/dev/" $5, $2, $3, $4 }
 ')
-echo "$usb_drives"
+
 # Check if there are available drives
 if [ -z "$usb_drives" ]; then
-echo "No available drive. Exiting..."
-exit 1
+    echo "No available drives. Exiting..."
+    exit 1
 fi
 
 # Display the available drives in the terminal and wait for a user response
-echo "Enter the number of the drive you want to select:"
+echo "Enter the number of the drive you want to modify:"
 while true; do
 
     IFS=$'\n' read -rd '' -a usb_array <<< "$usb_drives"
