@@ -40,6 +40,11 @@ display_drives() {
     # Remove the trailing '|'
     include_volumes=$(echo "$include_volumes" | sed 's/|$//')
 
+    if [ -z "$include_volumes" ]; then
+        echo "No registered drive connected. Exiting..."
+        exit 1
+    fi
+
     # Use grep -E with the OR pattern to filter lsblk output
     lsblk_output=$(lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT,UUID -r | grep -E "\b($include_volumes)\b")
 

@@ -24,15 +24,15 @@ case "$1" in
     ;;
   -n)
     # Call the script for adding new drives and destinations
-    /usr/local/bin/backup-tool-n.sh "${@:2}"
+    /usr/bin/backup-tool-n.sh "${@:2}"
     ;;
   -m)
     # Call the script for modifying drives and destinations
-    /usr/local/bin/backup-tool-m.sh "${@:2}"
+    /usr/bin/backup-tool-m.sh "${@:2}"
     ;;
   -b)
     # Call the script for deploying udev rules and systemd services
-    /usr/local/bin/backup-tool-b.sh "${@:2}"
+    /usr/bin/backup-tool-b.sh "${@:2}"
     ;;
   *)
     echo "Error: Invalid option '$1'"

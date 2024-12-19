@@ -7,5 +7,5 @@ Description: Backup tool for linux
  process to backup user data in a USB key.
 Section: utils
 Priority: optional
-Depends: ${rsync:Depends}
+Depends: rsync
 Homepage: https://github.com/edouardbruelhart/usb-backup-tool
