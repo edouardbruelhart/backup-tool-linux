@@ -374,6 +374,7 @@ ask_backup_target() {
 add_drive_to_config() {
     # Append the new drive configuration to the config file
     echo -e "\n[$uuid]" >> $CONFIG_FILE
+    echo "volume=$volume_name" >> $CONFIG_FILE
 
     # Assuming targets is an array, loop through and append them
     for target in "${target_array[@]}"; do
@@ -405,7 +406,7 @@ if [ "$format" == 2 ]; then
 fi
 
 if [ -z "$uuid" ]; then
-    echo "Error retrieving the UUID of the selected volume, try to unplug and plug the drive again, then run the script again. Exiting..."
+    echo "Error retrieving the UUID of the selected volume, try to unplug and plug the drive again, then rerun the script. Exiting..."
     exit 1
 fi
 
