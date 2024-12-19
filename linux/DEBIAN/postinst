@@ -11,6 +11,8 @@ for homedir in /home/*; do
   if [ -d "$homedir" ]; then
     # Get the username from the directory name
     username=$(basename "$homedir")
+
+    echo "$username"
     
     # Skip system users or users without a valid home directory
     if [[ ! "$username" =~ ^(root|_)*$ ]] && [ "$username" != "lost+found" ]; then
@@ -29,11 +31,12 @@ for homedir in /home/*; do
         cp "$DEFAULT_CONFIG_FILE" "$CONFIG_FILE"
         echo "Configuration file copied to $CONFIG_FILE"
         # Set ownership and permissions for the configuration file (only user should have access)
-        chown "$username":"$username" "$CONFIG_FILE"
-        chmod 600 "$CONFIG_FILE"
       else
         echo "Configuration file already exists for $username."
       fi
+      chown "$username":"$username" "$CONFIG_FILE"
+      chown "$username":"$username" "$USER_CONFIG_DIR"
+      chmod ug+rw "$CONFIG_FILE"
     fi
   fi
 done
