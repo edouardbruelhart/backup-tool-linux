@@ -1,11 +1,11 @@
 Package: backup-tool
-Version: 0.1
+Version: 1.0-1
 Maintainer: Edouard Brülhart <edouard.brulhart@gmail.com>
 Architecture: all
 Description: Backup tool for linux
-  test
+ A backup tool that permits to automatize
+ process to backup user data in a USB key.
 Section: utils
 Priority: optional
-Depends: rsync, zenity, exfat-fuse, exfatprogs
+Depends: ${rsync:Depends}
 Homepage: https://github.com/edouardbruelhart/usb-backup-tool
-Package-Type: deb
