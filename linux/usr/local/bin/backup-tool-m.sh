@@ -100,13 +100,12 @@ modify_setup() {
     while true; do
         echo "1. Add backup target"
         echo "2. Remove backup target"
-        echo "3. Select/deselect snapshot"
         read -r modify
         # Validate input
-        if [[ $modify -gt 0 && $modify -le 3 ]]; then
+        if [[ $modify -gt 0 && $modify -le 2 ]]; then
             break
         else
-            echo "Invalid choice. Please type 1 to modify, 2 to delete."
+            echo "Invalid choice. Please type 1 to add a target, 2 to delete a target."
         fi
     done
 }
@@ -124,9 +123,6 @@ new_target() {
         found && /^target=/ {print substr($0, 8)}
     ' "$CONFIG_FILE")
 
-    # Retrieve snapshot parameter
-    snapshot=($(awk -v uuid="[$uuid]" '/^\[/{found=0} $0 == uuid{found=1} found && /^snapshot=/{print substr($0, 10)}' "$CONFIG_FILE"))
-
     # Get the total size of the external drive in bytes
     drive_size=$(lsblk -o SIZE -b -n "$volume_path" | head -n 1)
     used_space=0
@@ -140,32 +136,15 @@ new_target() {
             echo "Warning: Target '$target' does not exist on computer. Removing target..."
             
             # Remove the target line from the configuration file
-            sed -i "/^\[$uuid\]/,/^\[/ s|^target=$target\$||" "$CONFIG_FILE"
+            sed -i "/^\[$uuid\]/,/^\[/ s|^target=$target\$||; /^\s*$/d" "$CONFIG_FILE"
 
             # clean up empty lines left after deletion
-            sed -i "/^\[$uuid\]/,/snapshot=/ {/^\s*$/d;}" "$CONFIG_FILE"
-
+            sed -i '/^$/ { N; /target=/ { s/^\n//; } }' "$CONFIG_FILE"
         fi
     done
 
     # Initialize remaining size
     remaining_size=$(($drive_size - $used_space))
-
-    # If snapshot is set to true, also remove system size to drive size
-    if [ $snapshot=="true" ]; then
-        echo "Snapshot is active. Calculating snapshot size..."
-        system_size=$(sudo du -sb / \
-            --exclude=/proc \
-            --exclude=/sys \
-            --exclude=/run \
-            --exclude=/media \
-            --exclude=/mnt \
-            --exclude=/dev \
-            --exclude=/tmp \
-            --exclude=/var/run \
-            --exclude=/run/user | awk '{ print $1 }')
-        remaining_size=$(($remaining_size - $system_size))
-    fi
 
     # Display theoretical remaining space
     remaining_size_human=$(numfmt --to=iec "$remaining_size")
@@ -228,8 +207,8 @@ new_target() {
 
         # Insert new targets before the 'snapshot' parameter for the UUID block
         for path in "${target_array[@]}"; do
-            sed -i "/^\[$uuid\]/,/^\[/ {/^snapshot=/i target=$path
-        }" "$CONFIG_FILE"
+            sed -i "/^\[$uuid\]/,/^\[/ {/^volume=/a target=$path
+                }" "$CONFIG_FILE"
         done
     fi
 
@@ -270,100 +249,10 @@ remove_target() {
     
     echo "updating configuration file..."
     # Remove the target line from the configuration file
-    sed -i "/^\[$uuid\]/,/^\[/ s|^target=$target\$||" "$CONFIG_FILE"
+    sed -i "/^\[$uuid\]/,/^\[/ s|^target=$target\$||; /^\s*$/d" "$CONFIG_FILE"
 
     # clean up empty lines left after deletion
-    sed -i "/^\[$uuid\]/,/snapshot=/ {/^\s*$/d;}" "$CONFIG_FILE"
-}
-
-modify_snapshot() {
-    # Retrieve existing targets for the UUID
-    existing_targets=()
-    while IFS= read -r line; do
-        existing_targets+=("$line")
-    done < <(awk -v uuid="[$uuid]" '
-        /^\[/{found=0} 
-        $0 == uuid {found=1} 
-        found && /^target=/ {print substr($0, 8)}
-    ' "$CONFIG_FILE")
-
-    # Get the total size of the external drive in bytes
-    drive_size=$(lsblk -o SIZE -b -n "$volume_path" | head -n 1)
-    used_space=0
-
-    echo "Calculating space used by existing targets..."
-    for target in "${existing_targets[@]}"; do
-        if [ -d "$target" ]; then
-            folder_size=$(du -sb "$target" | awk '{ print $1 }')
-            used_space=$(($used_space + $folder_size))
-        else
-            echo "Warning: Target path '$target' does not exist on computer and will be deleted."
-            
-            # Remove the target line from the configuration file
-            sed -i "/^\[$uuid\]/,/^\[/ s|^target=$target\$||" "$CONFIG_FILE"
-
-            # clean up empty lines left after deletion
-            sed -i "/^\[$uuid\]/,/snapshot=/ {/^\s*$/d;}" "$CONFIG_FILE"
-
-        fi
-    done
-
-    # Initialize remaining size
-    remaining_size=$(($drive_size - $used_space))
-
-    # Ask if the user wants to take a snapshot of the entire system
-    echo "Do you want to take a snapshot of the entire system in volume $volume_name?"
-    while true; do
-        echo "1. Yes"
-        echo "2. No"
-        read -r snapshot_response
-        if [[ $snapshot_response -gt 0 && $snapshot_response -le 2 ]]; then
-            if [ "$snapshot_response" == 1 ]; then
-                # Calculate the size of the root directory (system snapshot) and exclude unnecessary folders
-                echo "Calculating the size of the system snapshot (can take a while)..."
-                # Get the size of the folder in bytes
-                system_size=$(sudo du -sb / \
-                    --exclude=/proc \
-                    --exclude=/sys \
-                    --exclude=/run \
-                    --exclude=/media \
-                    --exclude=/mnt \
-                    --exclude=/dev \
-                    --exclude=/tmp \
-                    --exclude=/var/run \
-                    --exclude=/run/user | awk '{ print $1 }')
-
-                # Check if the system fits in the remaining space
-                if [ "$system_size" -le "$remaining_size" ]; then
-                    # Convert sizes to human-readable format
-                    remaining_size_human=$(numfmt --to=iec "$remaining_size")
-
-                    echo "The system snapshot fits in the remaining space ($remaining_size_human)."
-                    echo "Snapshot is active."
-                    
-                    snapshot="true"
-                else
-                    # System snapshot is too large
-                    remaining_size_human=$(numfmt --to=iec "$remaining_size")
-
-                    echo "The system snapshot is too large to fit in the remaining space ($remaining_size_human)."
-                    echo "Snapshot is inactive."
-
-                    snapshot="false"
-                fi
-            else
-                echo "Snapshot is inactive."
-
-                snapshot="false"
-            fi
-            break
-        else
-            echo "Invalid choice. Please type 1 to create a snapshot, 2 to ignore."
-        fi
-    done
-
-    # Replace the snapshot value in the configuration file for the specific UUID
-    sed -i "/^\[$uuid\]/,/snapshot=/s/^snapshot=[^ ]*/snapshot=$snapshot/" "$CONFIG_FILE"
+    sed -i '/^$/ { N; /target=/ { s/^\n//; } }' "$CONFIG_FILE"
 }
 
 delete_setup() {
@@ -412,11 +301,6 @@ if [ "$action" == 1 ]; then
     # Remove a backup target
     if [ "$modify" == 2 ]; then
         remove_target
-    fi
-
-    # Change snapshot choice
-    if [ "$modify" == 3 ]; then
-        modify_snapshot
     fi
 fi
 

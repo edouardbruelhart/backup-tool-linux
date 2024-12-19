@@ -26,6 +26,10 @@ ask_drives() {
         # Extract the base drive name for the current UUID
         drive_name=$(lsblk -o NAME,UUID | grep "$uuid" | awk '{print $1}' | sed 's/^[[:space:]]*└─//' | sed 's/[0-9]*$//')
 
+        if [ -z "$drive_name" ]; then
+            continue
+        fi
+
         # Remove the lines corresponding to the obtained drive_name from the lsblk_output
         lsblk_output=$(echo "$lsblk_output" | grep -v "$drive_name")
     done
@@ -33,7 +37,7 @@ ask_drives() {
     # Filter and prepare the list of USB drives, without already setup drives
     usb_drives=$(echo "$lsblk_output" | awk '
     BEGIN { FS=" "; OFS=" " }
-    NR > 1 && $1 == "usb" { print "/dev/" $5, $2, $3, $4 }
+    $1 == "usb" { print "/dev/" $5, $2, $3, $4 }
     ')
 
     # Check if there are available drives
@@ -142,12 +146,12 @@ format_drive() {
     # Wait for system update, otherwise the new volume is not correctly detected
     sleep 2
 
-    # Format the new partition as exFAT with the specified volume name
-    sudo mkfs.exfat -n "$volume_name" "$new_partition" >/dev/null 2>&1
+    # Format the new partition as NTFS with the specified volume name
+    sudo mkfs.ntfs -f -L "$volume_name" "$new_partition" >/dev/null 2>&1
 
     # Check if formatting was successful
     if [ $? -eq 0 ]; then
-      echo "$new_partition formatted successfully to exFAT with name '$volume_name'."
+      echo "$new_partition formatted successfully to NTFS with name '$volume_name'."
     else
       echo "Error formatting $new_partition."
       exit 1
@@ -222,13 +226,13 @@ existing_volume() {
         else
             selected_volume="${volumes[$volume_number-1]}"
             fstype=$(echo "$selected_volume" | awk '{print $3}')
-            # Check that the volume is formatted in exfat, else propose user to format in exfat
-            if [ "$fstype" == "exfat" ]; then
+            # Check that the volume is formatted in NTFS, else propose user to format it.
+            if [ "$fstype" == "ntfs" ]; then
                 volume_name=$(echo "$selected_volume" | awk '{print $1}')
                 uuid=$(echo "$selected_volume" | awk '{print $6}')
                 size=$(echo "$selected_volume" | awk '{print $2}')
             else
-                echo "The volume you selected is not formatted in exfat. This could lead to compatibility issues with other systems and/or to file size limits. Do you want to format it in exFAT?"
+                echo "The volume you selected is not formatted in NTFS. This could lead to compatibility issues with other systems and/or to file size limits. Do you want to format it in NTFS?"
                 while true; do
                     echo "1. Yes"
                     echo "2. No"
@@ -313,61 +317,11 @@ ask_backup_target() {
         fi
     done
 
-    # Ask if the user wants to take a snapshot of the entire system
-    echo "Do you want to take a snapshot of the entire system?"
-    while true; do
-        echo "1. Yes"
-        echo "2. No"
-        read -r snapshot_response
-        if [[ $snapshot_response -gt 0 && $snapshot_response -le 2 ]]; then
-            if [ "$snapshot_response" == 1 ]; then
-                # Calculate the size of the root directory (system snapshot) and exclude unnecessary folders
-                echo "Calculating the size of the system snapshot (can take a while)..."
-                # Get the size of the folder in bytes
-                system_size=$(sudo du -sb / \
-                    --exclude=/proc \
-                    --exclude=/sys \
-                    --exclude=/run \
-                    --exclude=/media \
-                    --exclude=/mnt \
-                    --exclude=/dev \
-                    --exclude=/tmp \
-                    --exclude=/var/run \
-                    --exclude=/run/user | awk '{ print $1 }')
-
-                # Check if the system fits in the remaining space
-                if [ "$system_size" -le "$remaining_size" ]; then
-                    # Convert sizes to human-readable format
-                    remaining_size_human=$(numfmt --to=iec "$remaining_size")
-
-                    echo "The system snapshot fits in the remaining space ($remaining_size_human)."
-                    echo "Adding the system snapshot to the backup process."
-                    
-                    snapshot="true"
-                else
-                    # System snapshot is too large
-                    remaining_size_human=$(numfmt --to=iec "$remaining_size")
-
-                    snapshot="false"
-                    echo "The system snapshot is too large to fit in the remaining space ($remaining_size_human)."
-                    echo "Skipping system snapshot."
-                fi
-            else
-                snapshot="false"
-                echo "Skipping system snapshot."
-            fi
-            break
-        else
-            echo "Invalid choice. Please type 1 to create a snapshot, 2 to ignore."
-        fi
-    done
-
     # Display the final list of selected folders
     echo "Backup target folders:"
     for path in "${target_array[@]}"; do
         echo "- $path"
     done
-    echo "- snapshot: $snapshot"
 }
 
 # Register the drive to config file
@@ -380,9 +334,6 @@ add_drive_to_config() {
     for target in "${target_array[@]}"; do
         echo "target=$target" >> $CONFIG_FILE
     done
-
-    # Write the snapshot
-    echo "snapshot=$snapshot" >> $CONFIG_FILE
 
     echo "Setup successfully saved!"
 }

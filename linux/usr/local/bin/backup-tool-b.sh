@@ -1,78 +1,109 @@
 #!/bin/bash
 
-# Define your configuration file
-CONF_FILE="/etc/backup-tool.conf"
+# Get the current logged-in user's home directory
+USER_HOME=$(eval echo ~$USER)
 
-# Function to parse the configuration file
-parse_conf() {
-    # DRIVES, and FOLDERS from the config file
-    DRIVES=$(grep "^DRIVES=" "$CONF_FILE" | cut -d'=' -f2 | tr ',' ' ')
-    FOLDERS=$(grep "^FOLDERS=" "$CONF_FILE" | cut -d'=' -f2 | tr ',' ' ')
-}
-
-# Function to check if a drive is mounted and retrieve its mount point
-get_mount_point() {
-    local uuid=$1
-    local mount_point=$(lsblk -o UUID,MOUNTPOINT | grep "$uuid" | awk '{print $2}')
-    if [[ -z "$mount_point" ]]; then
-        echo ""
-    else
-        echo "$mount_point"
-    fi
-}
-
-# Main script execution
-if [[ ! -f "$CONF_FILE" ]]; then
-    echo "Configuration file $CONF_FILE not found!"
-    exit 1
+# Get the linked configuration file
+if [ "$USER_HOME" == "/root" ]; then
+    # If is root or uses sudo, use the default configuration file
+    CONFIG_FILE="/etc/backup-tool/backup-tool.conf"
+else
+    # If user is a non-root user, use the user-specific configuration file
+    CONFIG_FILE="$USER_HOME/.config/backup-tool/backup-tool.conf"
 fi
 
-# Parse the configuration file
-parse_conf
+# List all registered uuids
+retrieve_uuids() {
+    # Extract UUIDs from the config file
+    uuid_list=$(grep -oP '^\[\K[^\]]+' "$CONFIG_FILE" | sort | uniq)
 
-# Ensure DRIVES and FOLDERS have the same number of items
-drive_array=($DRIVES)
-folder_array=($FOLDERS)
-
-for i in "${!drive_array[@]}"; do
-    drive_uuid="${drive_array[$i]}"
-    mount_point=$(get_mount_point "$drive_uuid")
-    if [[ -z "$mount_point" ]]; then
-        echo "Skipping backup for drive UUID $drive_uuid as it is not mounted."
-        continue
+    if [ -z "$uuid_list" ]; then
+    echo "No registered setup. Exiting..."
+    exit 1
     fi
+}
 
-    # Loop through each folder path in FOLDERS
-    for source_folder in "${folder_array[@]}"; do
-        # Ensure the source folder exists
-        if [[ ! -d "$source_folder" ]]; then
-            echo "Source folder $source_folder does not exist. Skipping..."
+# perform backup
+perform_backup() {
+    # Loop over registered volumes
+    for uuid in $uuid_list; do
+        # Get mount point and volume name
+        mount_point=$(lsblk -o UUID,MOUNTPOINT,LABEL | grep "$uuid" | awk '{print $2}')
+        volume=$(awk -v uuid="[$uuid]" '/^\[/{found=0} $0 == uuid{found=1} found && /^volume=/{print substr($0, 8)}' "$CONFIG_FILE")
+
+        # Check if volume is mounted
+        if [[ -z "$mount_point" ]]; then
+            echo "No mount point detected, skipping volume $volume (UUID: $uuid)."
             continue
+        else
+            echo "Backup in progress for volume $volume (UUID: $uuid)..."
         fi
+        
+        # Retrieve backup targets
+        targets=()
+        while IFS= read -r line; do
+            targets+=("$line")
+        done < <(awk -v uuid="[$uuid]" '
+            /^\[/{found=0} 
+            $0 == uuid {found=1} 
+            found && /^target=/ {print substr($0, 8)}
+        ' "$CONFIG_FILE")
 
-        # Extract the base name of the folder (e.g., "dbgi" from "/home/edouard/Bureau/dbgi")
-        target_folder_name=$(basename "$source_folder")
-        target_folder_path="$mount_point/$target_folder_name"
+        backup_path="$mount_point/backup"
 
         # Create the folder on the drive if it does not exist
-        if [[ ! -d "$target_folder_path" ]]; then
-            echo "Creating folder $target_folder_name at $target_folder_path..."
-            mkdir -p "$target_folder_path"
+        if [[ ! -d "$backup_path" ]]; then
+            echo "Creating folder backup at $backup_path..."
+            mkdir -p "$backup_path"
             if [[ $? -ne 0 ]]; then
-                echo "Failed to create folder $target_folder_name on drive $drive_uuid."
+                echo "Failed to create backup folder on $volume."
                 continue
             fi
         else
-            echo "Folder $target_folder_name already exists at $target_folder_path."
+            echo "Backup folder already exists at $backup_path. Skipping folder creation..."
         fi
 
-        # Sync the content of the source folder to the target folder using rsync
-        echo "Syncing $source_folder to $target_folder_path..."
-        rsync -a --delete "$source_folder/" "$target_folder_path/"
-        if [[ $? -ne 0 ]]; then
-            echo "Error occurred while syncing $source_folder to $target_folder_path."
-        else
-            echo "Successfully synced $source_folder to $target_folder_path."
-        fi
+        # Loop over each target
+        for target in "${targets[@]}"; do
+            # Check target existence
+            if [[ ! -d "$target" ]]; then
+                echo "Target folder $target does not exist. It will be removed from setup. Skipping..."
+                # Remove the target line from the configuration file
+                sed -i "/^\[$uuid\]/,/^\[/ s|^target=$target\$||; /^\s*$/d" "$CONFIG_FILE"
+
+                # clean up empty lines left after deletion
+                sed -i '/^$/ { N; /target=/ { s/^\n//; } }' "$CONFIG_FILE"
+                continue
+            fi
+
+            # Get path to volume
+            target_name=$(basename "$target")
+            target_path="$backup_path/$target_name"
+
+            # Create the folder on the drive if it does not exist
+            if [[ ! -d "$target_path" ]]; then
+                echo "Creating folder $target_name at $target_path..."
+                mkdir -p "$target_path"
+                if [[ $? -ne 0 ]]; then
+                    echo "Failed to create folder $target_name on $volume."
+                    continue
+                fi
+            else
+                echo "Folder $target_name already exists at $target_path. Skipping folder creation..."
+            fi
+
+            # Sync the content of the source folder to the target folder using rsync
+            echo "Syncing $target to $target_path..."
+            rsync -a --delete "$target/" "$target_path/"
+            if [[ $? -ne 0 ]]; then
+                echo "Error occurred while syncing $target to $target_path."
+            else
+                echo "Successfully synced $target to $target_path."
+            fi
+        done
     done
-done
+}
+
+retrieve_uuids
+
+perform_backup
